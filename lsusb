@@ -45,7 +45,7 @@ usage () { echo "Usage: $(basename "$0") [options]..."; }
 parse ()  {
 	# Get the name of the device, it is the first line that ends with a ':'
 	# Trim the string at the end
-	name=`echo "$device" | head -3 | egrep ":$" | head -1 | sed -e 's/^ *//g' -e 's/ *:$//g'`
+	name=`echo "$device" | egrep ":$" | tail -1 | sed -e 's/^ *//g' -e 's/ *:$//g'`
 
 	# Get the speed
 	speed=`echo "$device" | egrep "Speed: " | awk -F':' '{print $2}' | sed 's/^ *[^0-9]*//g; s/ *$//; s/b\/sec$//; s/ //g'`
@@ -209,6 +209,15 @@ cleanup () {
 	exit $exitcode
 }
 
+get_devices() {
+	<<<"$rawlog" sed -e '/:$/i\
+#'
+}
+
+get_buses() {
+	<<<"$rawlog" awk -v first=1 '/Bus:$/ { flag = 1; if (first == 1) { first = 0 } else { print "#" }; print; next }; /:$/ && flag == 1 { flag = 0 }; flag'
+}
+
 buildtreeline () {
 # Build a formatted line to be sorted for the tree.
 # The LocationID has the tree structure (0xbbdddddd):
@@ -233,9 +242,7 @@ tree () {
 	setup
 	treeflag="yes"
 
-	# Tahoe starts with "Location ID", prior to Tahoe starts with Product ID
-	devices=`echo "$rawlog" | egrep -B 4 -A 6 "\n *(Product|Location) ID" | sed 's/^--/#/'`
-	for device in $devices
+	for device in "$(get_devices)"
 	do
 		# Skip null device lines
 		if [ "${#device}" -ne 1 ]; then
@@ -245,8 +252,7 @@ tree () {
 		fi
 	done
 
-	buses=`echo "$rawlog" | egrep -A 7 "Bus:" | sed 's/^--/#/'`
-	for device in $buses
+	for device in "$(get_buses)"
 	do
 		parse
 		buildtreeline
@@ -320,9 +326,8 @@ setup
 # with the '#' symbol in case other parameters that contain a dash
 # will not be interfered
 
-devices=`echo "$rawlog" | egrep -B 2 -A 6 "(Product|Location) ID" | sed 's/^--/#/'`
 # Iterate over each entry
-for device in $devices
+for device in "$(get_devices)"
 do
 	parse
 	if [ $? -eq 0 ]; then
@@ -331,8 +336,7 @@ do
 	fi
 done
 
-buses=`echo "$rawlog" | egrep -A 7 "Bus:" | sed 's/^--/#/'`
-for device in $buses
+for device in "$(get_buses)"
 do
 	parse
 	if [ $? -eq 0 ]; then
