@@ -4,13 +4,30 @@
 #
 # Disclaimer: usage info and functionality from lsusb under Linux
 
-verbose () { system_profiler SPUSBDataType; }
-version () { echo "lsusb for Mac OS X 007"; }
+data_type () {
+	is_before_tahoe=false
+
+	mac_ver="$(sw_vers -productVersion)"
+	major="${mac_ver%%.*}"
+
+	if [ "$major" -lt 16 ]; then
+		is_before_tahoe=true
+	fi
+
+	if $is_before_tahoe; then
+		echo SPUSBDataType
+	else
+		echo SPUSBHostDataType
+	fi
+}
+
+verbose () { system_profiler $(data_type); }
+version () { echo "lsusb for Mac OS"; }
 help ()  {
   cat >&2 <<EOM
 $(usage)
 List USB devices
-  -v  Increase verbosity (show output of "system_profiler SPUSBDataType")
+  -v  Increase verbosity (show output of "system_profiler $(data_type)")
   -s  [[bus]:][devnum]
        Show only devices with specified device and/or
        bus numbers (in decimal)
@@ -28,7 +45,7 @@ usage () { echo "Usage: $(basename "$0") [options]..."; }
 parse ()  {
 	# Get the name of the device, it is the first line that ends with a ':'
 	# Trim the string at the end
-	name=`echo "$device" | head -2 | egrep ":$"  | sed -e 's/^ *//g' -e 's/ *:$//g'`
+	name=`echo "$device" | head -3 | egrep ":$" | head -1 | sed -e 's/^ *//g' -e 's/ *:$//g'`
 
 	# Get the speed
 	speed=`echo "$device" | egrep "Speed: " | awk -F':' '{print $2}' | sed 's/^ *[^0-9]*//g; s/ *$//; s/b\/sec$//; s/ //g'`
@@ -40,17 +57,22 @@ parse ()  {
 	VID_all=`echo "$device" | egrep "Vendor ID" | awk -F':' '{print $2}' | sed -e 's/0x//; s/^ *//g' -e 's/ *$//g'`
 	# Get the VID
 	VID=`echo "$VID_all" | awk -F ' ' '{print $1}' | sed 's/^ *//; s/ *$//'`
-	# Get the manufacturer string
-	manufacturer=`echo "$VID_all" | cut -d ' ' -f 2- | sed 's/^ *//; s/ *$//'`
+
+	manufacturer=`echo "$device" | grep "Manufacturer: " | awk -F':' '{print $2}'`
+	if [ -z "$manufacturer" ]; then
+		# Get the manufacturer string from the Vendor ID
+		manufacturer=`echo "$VID_all" | cut -d ' ' -f 2- | sed 's/^ *//; s/ *$//'`
+	fi
 
 	# Get the Location Id
-	location=`echo "$device" | egrep "Location ID" | sed -e 's/Location ID://; s/^ *//g; s/ *$//g;'`
+	location=`echo "$device" | egrep -A7 "$name" | egrep "Location ID" | tail -1 | sed -e 's/Location ID://; s/^ *//g; s/ *$//g;'`
 
 	# Get the bus number. It's the first two hex digits of the Location ID.
 	# We'll convert to decimal later
 	bus_num=`echo "$location" |  sed -e 's/^..\(..\).*/\1/;'`
 
 	# Get the device number. It's after the '/' in the Location ID, already decimal.
+	# Tahoe breaks this format, and we don't have a device number.
 	device_num=`echo "$location" | awk -F'/' '{print $2}'`
 	device_num=`printf "%0*d" 3 "$device_num"`
 
@@ -77,7 +99,7 @@ parse ()  {
 		manufacturer="(Apple Inc.)"
 
 		# The PID depends on the speed of the hub, which we deduce from the controller driver.
-		PID=`echo "$device" | egrep "Controller Driver" | awk -F':' '{print $2}' | sed -e 's/0x//; s/^ *//g' -e 's/ *$//g; s/.*\(....\)$/\1/'`
+		PID=`echo "$device" | egrep "(Controller)? Driver:" | awk -F':' '{print $2}' | tail -1 | sed -e 's/0x//; s/^ *//g' -e 's/ *$//g; s/.*\(....\)$/\1/'`
 	  	case "$PID" in
 			OHCI) PID="8005"; name="OHCI Root Hub Simulation"; speed="12M" ;;
 			EHCI) PID="8006"; name="EHCI Root Hub Simulation"; speed="480M" ;;
@@ -87,11 +109,12 @@ parse ()  {
 
 	# Convert bus number from hexadecimal to decimal.
 	bus_num=`echo "$((16#$bus_num))"`
-        bus_num=`printf "%0*d" 3 "$bus_num"`
+	bus_num=`printf "%0*d" 3 "$bus_num"`
 
 	# Strip the parentheses from manufacturer name unless so specified.
-	if [ -z "$parens" ]; then	
-	 	manufacturer=`echo "$manufacturer" | sed 's/(//; s/)//'`
+	manufacturer=`echo "$manufacturer" | sed 's/(//; s/)//' | xargs`
+	if [[ ! -z "$parens" ]]; then
+		manufacturer=`echo "($manufacturer)"`
 	fi
 
 	# Include serial number only if available.
@@ -210,7 +233,8 @@ tree () {
 	setup
 	treeflag="yes"
 
-	devices=`echo "$rawlog" | egrep -B 2 -A 6 "Product ID" | sed 's/^--/#/'`
+	# Tahoe starts with "Location ID", prior to Tahoe starts with Product ID
+	devices=`echo "$rawlog" | egrep -B 4 -A 6 "\n *(Product|Location) ID" | sed 's/^--/#/'`
 	for device in $devices
 	do
 		# Skip null device lines
@@ -264,8 +288,8 @@ done
 
 setup
 
-# Get all sets of lines that contain the "Product ID" string.
-# Also include other relevant lines. Here's an entry sample:
+# Get all sets of lines that contain the "Product ID" or "Location ID string.
+# Also include other relevant lines. Here's an entry sample for Sonoma and earlier
 #
 # BRCM2046 Hub:
 #
@@ -278,11 +302,25 @@ setup
 #  Current Available (mA): 500
 #  Current Required (mA): 0
 #
+# And for Tahoe and later:
+#
+# Pixel 10:
+#
+#  Location ID: 0x01100000
+#  Connection Type: Removable
+#  Manufacturer: Google
+#  Serial Number: 4123ABCD
+#  Link Speed: 480 Mb/s
+#  USB Vendor ID: 0x18d1
+#  USB Product ID: 0x4ee7
+#  USB Product Version: 0x0601
+#  Power Allocated: 2.5 W (500 mA)
+#
 # Each entry will be separated by two '--' lines. We replace them
 # with the '#' symbol in case other parameters that contain a dash
 # will not be interfered
 
-devices=`echo "$rawlog" | egrep -B 2 -A 6 "Product ID" | sed 's/^--/#/'`
+devices=`echo "$rawlog" | egrep -B 2 -A 6 "(Product|Location) ID" | sed 's/^--/#/'`
 # Iterate over each entry
 for device in $devices
 do
